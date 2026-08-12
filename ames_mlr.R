@@ -1,20 +1,73 @@
-# Project 3 - Housing dataset for MLR analysis
-# = is used in place of <- intentionally
-# Load packages
+# Project 3 — Ames Housing Multiple Linear Regression Analysis
+
+# ============================================================================
+# TABLE OF CONTENTS
+# ============================================================================
+# A. Setup
+#    1. Packages
+#    2. Brand colors and portfolio plot theme
+#    3. Plot-saving helper
+#
+# B. Import and initial housekeeping
+#    1. Import Ames Housing data
+#    2. Remove identifier columns and clean column names
+#
+# C. Inspect and clean data
+#    1. Encode ordinal variables
+#    2. Convert remaining categorical variables to factors
+#    3. Create absence / presence indicators
+#    4. Validate and correct year variables
+#    5. Remove redundant predictors and handle missing values
+#
+# D. Exploratory data analysis
+#    1. Exclude abnormal sales and very large houses
+#    2. SalePrice and log(SalePrice) distributions
+#    3. Correlation analysis
+#
+# E. Multiple linear regression
+#    1. Train / test split
+#    2. LASSO variable selection
+#    3. OLS refit
+#    4. AIC and BIC backward selection
+#    5. Model comparison
+#
+# F. Model diagnostics
+#    1. Residuals vs fitted
+#    2. Normal Q-Q
+#    3. Scale-location
+#    4. Residuals vs leverage
+#    5. Cook's distance, residuals, and VIF
+#    6. Residuals by sale condition
+#    7. Breusch-Pagan test
+#
+# G. Results and visualizations
+#    1. Coefficient table with percent effects
+#    2. Predicted vs actual — test set
+#    3. Standardized coefficient plot
+#    4. Error metrics by SalePrice tercile
+#    5. Baseline model
+# ============================================================================
+
+# ============================================================================
+# A. Setup
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Packages
+# ----------------------------------------------------------------------------
 library(ggplot2)      # plotting and portfolio theme
 library(dplyr)        # data manipulation (filter, mutate, select, etc.)
 library(readxl)       # import the AmesHousing.xls file
 library(broom)        # tidy model output if needed
 library(car)          # VIF and other regression diagnostics
-library(corrplot)     # correlation matrix visualization
-library(GGally)       # optional pairwise plots
 library(lmtest)       # Breusch-Pagan and other specification tests
-library(performance)  # additional model performance / check functions
 library(Matrix)       # required by glmnet
 library(glmnet)       # LASSO and Elastic Net
-library(tidyr)        # reshaping data for ggplot correlation heatmap
 library(patchwork)    # combine multiple ggplots into a 2x2 grid
 
+# ----------------------------------------------------------------------------
+# 2. Brand colors and portfolio plot theme
+# ----------------------------------------------------------------------------
 # Brand colors
 brand_colors = c(
   field = "#041F2C",
@@ -28,7 +81,7 @@ brand_colors = c(
 )
 
 # Portfolio plot theme
-portfolio_theme = theme_minimal() +
+portfolio_theme = theme_minimal(base_size = 15) +
   theme(
     text = element_text(
       family = "Montserrat",
@@ -36,17 +89,28 @@ portfolio_theme = theme_minimal() +
     ),
     plot.title = element_text(
       family = "Archivo Black",
-      color = brand_colors["plum"]
+      color = brand_colors["plum"],
+      size = 18
+    ),
+    plot.subtitle = element_text(
+      family = "Montserrat",
+      color = brand_colors["field"],
+      size = 13
     ),
     plot.caption = element_text(
       family = "Source Code Pro",
-      color = brand_colors["brick"]
+      color = brand_colors["brick"],
+      size = 11
     ),
     axis.title = element_text(
-      color = brand_colors["field"]
+      family = "Montserrat",
+      color = brand_colors["field"],
+      size = 13
     ),
     axis.text = element_text(
-      color = brand_colors["field"]
+      family = "Montserrat",
+      color = brand_colors["field"],
+      size = 12
     ),
     panel.grid.major = element_line(
       color = brand_colors["salmon"],
@@ -62,16 +126,35 @@ portfolio_theme = theme_minimal() +
       color = NA
     )
   )
+# ----------------------------------------------------------------------------
+# 3. Plot-saving helper
+# ----------------------------------------------------------------------------
+save_plot <- function(plot, file, width = 7, height = 7) {
+  # Wrap long ggplot titles so they stay inside the saved image.
+  # Patchwork figures are left alone because their title comes from plot_annotation().
+  if (!inherits(plot, "patchwork") && !is.null(plot$labels$title)) {
+    plot <- plot + labs(
+      title = paste(strwrap(plot$labels$title, width = 50), collapse = "\n")
+    )
+  }
+  
+  ggsave(file, plot, width = width, height = height, dpi = 200)
+}
 
-###
-# Import data
-###
+
+# ============================================================================
+# B. Import and initial housekeeping
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Import Ames Housing data
+# ----------------------------------------------------------------------------
 setwd("~/project_3_housing")
 data = read_excel("AmesHousing.xls")
 
-##
-## Quick housekeeping
-##
+# ----------------------------------------------------------------------------
+# 2. Remove identifier columns and clean column names
+# ----------------------------------------------------------------------------
 # Drop pure identifier columns ~ listed in docs, not useful for MLR
 data$Order = NULL
 data$PID = NULL
@@ -82,15 +165,17 @@ names(data) = gsub(" ", "_", names(data))
 names(data)
 
 
-###
-# Inspect and Clean data
-###
+# ============================================================================
+# C. Inspect and clean data
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Encode ordinal variables
+# ----------------------------------------------------------------------------
 # Get character columns
 char_cols = names(data)[sapply(data, is.character)]
 
-###
-# Start with Ordinals
-###
+# Quality-coded ordinal variables
 # automating the first set of ordinals
 # Detect columns that contain quality codes
 qual_levels = c("Ex", "Gd", "TA", "Fa", "Po")
@@ -236,13 +321,17 @@ remaining_char = setdiff(char_cols, c(
 lapply(data[remaining_char], function(x) sort(unique(as.character(x))))
 # confirmed.
 
-## Remaining Non-Ordinal char vectors
+# ----------------------------------------------------------------------------
+# 2. Convert remaining categorical variables to factors
+# ----------------------------------------------------------------------------
 #The rest are non-ordinals so they will be treated as factors
 data[remaining_char] = lapply(data[remaining_char], as.factor)
 table(sapply(data, class))
 names(data)[sapply(data, is.character)]
 
-# Absence / presence indicators
+# ----------------------------------------------------------------------------
+# 3. Create absence / presence indicators
+# ----------------------------------------------------------------------------
 data$Has_Basement = as.integer(data$Bsmt_Qual > 0)
 data$Has_Garage = as.integer(data$Garage_Qual > 0)
 data$Has_Fireplace = as.integer(data$Fireplace_Qu > 0)
@@ -265,6 +354,9 @@ table(data$Has_Fireplace, data$Fireplace_Qu == 0)
 table(data$Has_Pool, data$Pool_QC == 0)
 table(data$Has_Fence, data$Fence == 0)
 
+# ----------------------------------------------------------------------------
+# 4. Validate and correct year variables
+# ----------------------------------------------------------------------------
 # Checking year variables.
 # Year validation checks
 # Basic ranges (with correct backticks)
@@ -363,8 +455,11 @@ data %>%
 # Sale_Condition = Partial and Sale_Type = New explains it completely.
 # Leave the years exactly as they are. No fix needed.
 
+# ----------------------------------------------------------------------------
+# 5. Remove redundant predictors and handle missing values
+# ----------------------------------------------------------------------------
 # Choose the candidate pool explicitly
-# Garage_Yr_Blt — 131 NAs, kills every garage-less house ~ dropping.
+# Garage_Yr_Blt — 159 NAs, kills every garage-less house ~ dropping.
 # -- it is redundant, and the year a garage is built is not likely
 # a strong predictor of house price
 # Losing parts for SF, and parts for Bsmt to avoid perfect multi-colinearity
@@ -384,26 +479,26 @@ sum(!complete.cases(data))
 
 na_counts = colSums(is.na(data))
 na_counts[na_counts > 0]
-data$Lot_Frontage = NULL # var 464 NAs + weak signal low cor with SalesPrice
+data$Lot_Frontage = NULL # var 490 NAs + weak signal low cor with SalePrice
 # Fix the 23 masonry veneer missings, assumption: no recorded Vnr = no Vnr.
 # Note this is an inference, and possibly wrong, but the damage is only 23 rows
 data$Mas_Vnr_Type[is.na(data$Mas_Vnr_Type)] = "None"
 data$Mas_Vnr_Area[is.na(data$Mas_Vnr_Area)] = 0
-# Rebuild the indicator after the fix 
-data$Has_MasVnr = as.integer(data$Mas_Vnr_Type != "None") 
-sum(!complete.cases(data)) # 8 remaining NAs dropping them now:
-# Drop the final 8 incomplete rows
+# Rebuild the indicator after the fix
+data$Has_MasVnr = as.integer(data$Mas_Vnr_Type != "None")
+sum(!complete.cases(data)) # 9 remaining NAs dropping them now:
+# Drop the final 9 incomplete rows
 data = data[complete.cases(data), ]
 nrow(data)
 
 
+# ============================================================================
+# D. Exploratory data analysis
+# ============================================================================
 
-
-
-###
-# Exploratory data analysis
-###
-
+# ----------------------------------------------------------------------------
+# 1. Exclude abnormal sales and very large houses
+# ----------------------------------------------------------------------------
 # A very low sale price exists on the log transformed SalePrice, looking to see if exclusion is justified
 data %>%
   mutate(row = row_number()) %>%
@@ -424,27 +519,32 @@ data = data %>% filter(Gr_Liv_Area <= 4000)
 nrow(data)
 
 
+# ----------------------------------------------------------------------------
+# 2. SalePrice and log(SalePrice) distributions
+# ----------------------------------------------------------------------------
 # Distribution of SalePrice
-ggplot(data, aes(x = SalePrice)) +
+plot_saleprice = ggplot(data, aes(x = SalePrice)) +
   geom_histogram(bins = 40, fill = brand_colors["blue"], color = "white") +
   portfolio_theme +
   labs(title = "Distribution of SalePrice", x = "Sale Price", y = "Count")
+save_plot(plot_saleprice, "Distribution of SalePrice.png")
 
 # Log version (usually much better behaved)
-ggplot(data, aes(x = log(SalePrice))) +
+plot_log_saleprice = ggplot(data, aes(x = log(SalePrice))) +
   geom_histogram(bins = 40, fill = brand_colors["plum"], color = "white") +
   portfolio_theme +
   labs(title = "Distribution of log(SalePrice)", x = "log(Sale Price)", y = "Count")
+save_plot(plot_log_saleprice, "Distribution of log(SalePrice).png")
 
 
+# ----------------------------------------------------------------------------
+# 3. Correlation analysis
+# ----------------------------------------------------------------------------
 # All numeric columns (continuous, ordinal, and indicators)
 numeric_vars = data[sapply(data, is.numeric)]
 
 # Remove SalePrice from the predictor set
 numeric_predictors = numeric_vars[, names(numeric_vars) != "SalePrice"]
-
-# Correlation matrix
-cor_matrix = cor(numeric_predictors)
 
 # Correlations with log(SalePrice), strongest first
 log_price = log(data$SalePrice)
@@ -470,7 +570,7 @@ cor_df = head(cor_df, 20)
 # Add a simple color group
 cor_df$color_group = ifelse(cor_df$correlation >= 0.60, "Top", "Other")
 
-ggplot(cor_df, aes(x = reorder(variable, correlation), y = correlation, fill = color_group)) +
+plot_top_correlations = ggplot(cor_df, aes(x = reorder(variable, correlation), y = correlation, fill = color_group)) +
   geom_col() +
   coord_flip() +
   scale_fill_manual(values = c(
@@ -485,6 +585,7 @@ ggplot(cor_df, aes(x = reorder(variable, correlation), y = correlation, fill = c
     fill = NULL
   ) +
   theme(legend.position = "none")
+save_plot(plot_top_correlations, "Top Correlations with log(SalePrice).png")
 
 
 # Variables with correlation > 0.60 to log(SalePrice)
@@ -502,7 +603,7 @@ cor_long = as.data.frame(as.table(top_cor))
 names(cor_long) = c("Var1", "Var2", "Correlation")
 
 # Plot
-ggplot(cor_long, aes(x = Var1, y = Var2, fill = Correlation)) +
+plot_top_predictor_correlations = ggplot(cor_long, aes(x = Var1, y = Var2, fill = Correlation)) +
   geom_tile(color = "white") +
   geom_text(aes(label = round(Correlation, 2)), size = 3, color = "black") +
   scale_fill_gradient2(
@@ -516,7 +617,9 @@ ggplot(cor_long, aes(x = Var1, y = Var2, fill = Correlation)) +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
     axis.text.y = element_text(size = 9),
-    panel.grid = element_blank()
+    panel.grid = element_blank(),
+    plot.title.position = "plot",
+    plot.title = element_text(margin = margin(l = 36))
   ) +
   labs(
     title = "Correlations among top predictors (r > 0.60)",
@@ -525,23 +628,16 @@ ggplot(cor_long, aes(x = Var1, y = Var2, fill = Correlation)) +
     fill = "r"
   ) +
   coord_fixed()
+save_plot(plot_top_predictor_correlations, "Correlations among top predictors (r > 0.60).png")
 
 
+# ============================================================================
+# E. Multiple linear regression
+# ============================================================================
 
-
-
-
-###
-# Multiple linear regression
-###
-
-###
-# Multiple linear regression
-###
-
-# -------------------------------------------------
-# Train / Test split
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
+# 1. Train / test split
+# ----------------------------------------------------------------------------
 set.seed(42)
 n <- nrow(data)
 train_idx <- sample(seq_len(n), size = floor(0.80 * n))
@@ -556,15 +652,14 @@ write.csv(test,  "test.csv",  row.names = FALSE)
 nrow(train)
 nrow(test)
 
-# =========================================================
-# Model selection on TRAIN only
-# =========================================================
-
-# ----- 1. Design matrix and response (train only) -----
+# ----------------------------------------------------------------------------
+# 2. LASSO variable selection
+# ----------------------------------------------------------------------------
+# Model selection is performed on the training set only
+# Build the design matrix and response from the training data
 x_train <- model.matrix(log(SalePrice) ~ . - 1, data = train)
 y_train <- log(train$SalePrice)
 
-# ----- 2. LASSO with cross-validation (train only) -----
 set.seed(42)
 cv_lasso <- cv.glmnet(
   x = x_train,
@@ -579,20 +674,23 @@ selected_1se <- coef_1se[coef_1se[, 1] != 0, , drop = FALSE]
 
 cat("lambda.1se kept:", nrow(selected_1se) - 1, "predictors\n")
 
-# ----- 3. Refit OLS on the LASSO 1se variables (train only) -----
+# ----------------------------------------------------------------------------
+# 3. OLS refit
+# ----------------------------------------------------------------------------
 selected_vars <- setdiff(rownames(selected_1se), "(Intercept)")
 x_clean <- x_train[, selected_vars, drop = FALSE]
 
 # Clean ugly names
 colnames(x_clean) <- gsub("`", "", colnames(x_clean))
 colnames(x_clean) <- gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_clean))
-colnames(x_clean) <- gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_clean))
 colnames(x_clean) <- gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_clean))
 
 ols_1se <- lm(y_train ~ ., data = as.data.frame(x_clean))
 summary(ols_1se)
 
-# ----- 4. AIC and BIC stepwise (train only) -----
+# ----------------------------------------------------------------------------
+# 4. AIC and BIC backward selection
+# ----------------------------------------------------------------------------
 ols_aic <- step(ols_1se, direction = "backward", trace = 0)
 ols_bic <- step(ols_1se, direction = "backward", k = log(nrow(x_clean)), trace = 0)
 
@@ -602,17 +700,13 @@ cat("BIC stepwise predictors:", length(coef(ols_bic)) - 1, "\n")
 summary(ols_aic)
 summary(ols_bic)
 
-# =========================================================
+# ----------------------------------------------------------------------------
+# 5. Model comparison
+# ----------------------------------------------------------------------------
 # Evaluation function
-# =========================================================
-get_metrics <- function(model, name, train_data, test_data) {
+get_metrics <- function(model, name, test_data) {
   
   s <- summary(model)
-  
-  # Train metrics
-  train_log_pred <- fitted(model)
-  train_pred     <- exp(train_log_pred)
-  train_actual   <- exp(model$model[[1]])
   
   # Test design matrix
   x_test_full <- model.matrix(log(SalePrice) ~ . - 1, data = test_data)
@@ -620,7 +714,6 @@ get_metrics <- function(model, name, train_data, test_data) {
   # Clean names the same way we cleaned the training matrix
   colnames(x_test_full) <- gsub("`", "", colnames(x_test_full))
   colnames(x_test_full) <- gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_test_full))
-  colnames(x_test_full) <- gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_test_full))
   colnames(x_test_full) <- gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_test_full))
   
   model_vars <- setdiff(names(coef(model)), "(Intercept)")
@@ -634,7 +727,7 @@ get_metrics <- function(model, name, train_data, test_data) {
     Model       = name,
     Predictors  = length(coef(model)) - 1,
     
-    # Train
+    # Training-fit metrics
     Adj_R2      = s$adj.r.squared,
     Residual_SE = s$sigma,
     AIC         = AIC(model),
@@ -647,36 +740,24 @@ get_metrics <- function(model, name, train_data, test_data) {
   )
 }
 
-# =========================================================
-# Final comparison table
-# =========================================================
+# Build the final comparison table
 comparison <- rbind(
-  get_metrics(ols_1se, "LASSO 1se + OLS",   train, test),
-  get_metrics(ols_aic, "LASSO + AIC back",  train, test),
-  get_metrics(ols_bic, "LASSO + BIC back",  train, test)
+  get_metrics(ols_1se, "LASSO 1se + OLS",  test),
+  get_metrics(ols_aic, "LASSO + AIC back", test),
+  get_metrics(ols_bic, "LASSO + BIC back", test)
 )
 
 print(comparison, digits = 5, row.names = FALSE)
 
 
-
-
-
-
-
-
-
-
-####
-# Model diagnostics
-###
+# ============================================================================
+# F. Model diagnostics
+# ============================================================================
 
 # Choose the model to diagnose BIC
 final_model <- ols_bic
 
-# -------------------------------------------------
-# Diagnostic data
-# -------------------------------------------------
+# Prepare diagnostic data
 diag_df <- data.frame(
   obs        = seq_len(nrow(model.frame(final_model))),
   fitted     = fitted(final_model),
@@ -687,16 +768,15 @@ diag_df <- data.frame(
 )
 
 # Identify the most extreme points for labeling
-high_lev_idx  <- which.max(diag_df$leverage)
-high_cook_idx <- which.max(diag_df$cooksd)
+finite_resid  <- is.finite(diag_df$std_resid)
+high_lev_idx  <- which.max(replace(diag_df$leverage, !finite_resid, -Inf))
+high_cook_idx <- which.max(replace(diag_df$cooksd,   !finite_resid, -Inf))
 label_idx     <- unique(c(high_lev_idx, high_cook_idx))
 label_df      <- diag_df[label_idx, ]
 
-# -------------------------------------------------
-# 2x2 diagnostic plots
-# -------------------------------------------------
-
-# 1. Residuals vs Fitted
+# ----------------------------------------------------------------------------
+# 1. Residuals vs fitted
+# ----------------------------------------------------------------------------
 p1 <- ggplot(diag_df, aes(x = fitted, y = residuals)) +
   geom_point(alpha = 0.5, color = brand_colors["blue"]) +
   geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
@@ -704,8 +784,11 @@ p1 <- ggplot(diag_df, aes(x = fitted, y = residuals)) +
   geom_text(data = label_df, aes(label = obs), nudge_y = 0.03, size = 3.5) +
   portfolio_theme +
   labs(title = "Residuals vs Fitted", x = "Fitted values", y = "Residuals")
+save_plot(p1, "Residuals vs Fitted.png")
 
+# ----------------------------------------------------------------------------
 # 2. Normal Q-Q
+# ----------------------------------------------------------------------------
 qq_df <- diag_df[order(diag_df$std_resid), ]
 qq_df$theoretical <- qnorm(ppoints(nrow(qq_df)))
 qq_label <- qq_df[qq_df$obs %in% label_df$obs, ]
@@ -716,8 +799,11 @@ p2 <- ggplot(qq_df, aes(x = theoretical, y = std_resid)) +
   geom_text(data = qq_label, aes(label = obs), nudge_y = 0.25, size = 3.5) +
   portfolio_theme +
   labs(title = "Normal Q-Q", x = "Theoretical Quantiles", y = "Standardized Residuals")
+save_plot(p2, "Normal Q-Q.png")
 
-# 3. Scale-Location
+# ----------------------------------------------------------------------------
+# 3. Scale-location
+# ----------------------------------------------------------------------------
 p3 <- ggplot(diag_df, aes(x = fitted, y = sqrt(abs(std_resid)))) +
   geom_point(alpha = 0.5, color = brand_colors["blue"]) +
   geom_smooth(se = FALSE, color = brand_colors["brick"], linewidth = 0.8) +
@@ -725,74 +811,56 @@ p3 <- ggplot(diag_df, aes(x = fitted, y = sqrt(abs(std_resid)))) +
             aes(x = fitted, y = y, label = obs), nudge_y = 0.05, size = 3.5) +
   portfolio_theme +
   labs(title = "Scale-Location", x = "Fitted values", y = expression(sqrt("|Std. Residuals|")))
+save_plot(p3, "Scale-Location.png")
 
-# 4. Residuals vs Leverage
+# ----------------------------------------------------------------------------
+# 4. Residuals vs leverage
+# ----------------------------------------------------------------------------
 p4 <- ggplot(diag_df, aes(x = leverage, y = std_resid)) +
   geom_point(alpha = 0.5, color = brand_colors["blue"]) +
   geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
   geom_text(data = label_df, aes(label = obs), nudge_y = 0.3, hjust = 1, size = 3.5) +
   portfolio_theme +
   labs(title = "Residuals vs Leverage", x = "Leverage", y = "Standardized Residuals")
+save_plot(p4, "Residuals vs Leverage.png")
 
 # Combine into 2x2
-(p1 + p2) / (p3 + p4) +
-  plot_annotation(title = "Diagnostics — LASSO + BIC back")
+diagnostics_plot = (p1 + p2) / (p3 + p4) +
+  plot_annotation(
+    title = "Diagnostics — LASSO + BIC back",
+    theme = portfolio_theme
+  )
 
-# -------------------------------------------------
-# 1. Highest Cook's distances
-# -------------------------------------------------
+save_plot(
+  diagnostics_plot,
+  "Diagnostics — LASSO + BIC back.png",
+  width = 10,
+  height = 10
+)
+
+# ----------------------------------------------------------------------------
+# 5. Cook's distance, residuals, and VIF
+# ----------------------------------------------------------------------------
+# Highest Cook's distances
 finite <- is.finite(diag_df$cooksd)
 head(diag_df[finite, ][order(-diag_df$cooksd[finite]), ], 10)
 
-# -------------------------------------------------
-# 2. Worst (most negative) residuals
-# -------------------------------------------------
+# Worst (most negative) residuals
 worst <- order(diag_df$residuals)[1:10]
 train[worst, c("SalePrice", "Gr_Liv_Area", "Overall_Qual", "Overall_Cond",
                "Neighborhood", "Sale_Condition", "Sale_Type", "Year_Built")]
 
-# -------------------------------------------------
-# 3. Highest VIFs
-# -------------------------------------------------
+# Highest VIFs
 sort(vif(final_model), decreasing = TRUE)[1:10]
 
-# -------------------------------------------------
-# Cook's distance plot (cleaned)
-# -------------------------------------------------
+
+# Cook's distance plot
 n <- nrow(diag_df)
 
 # Keep only the 6 highest Cook's D points for labeling
 top6 <- diag_df[order(-diag_df$cooksd), ][1:6, ]
 
-ggplot(diag_df, aes(x = obs, y = cooksd)) +
-  geom_point(alpha = 0.6, color = brand_colors["blue"]) +
-  geom_hline(yintercept = 0.5, linetype = "dashed", color = brand_colors["plum"]) +
-  geom_text(
-    data = top6,
-    aes(label = obs),
-    nudge_y = 0.008,
-    size = 3.5
-  ) +
-  coord_cartesian(ylim = c(0, 0.25)) +
-  portfolio_theme +
-  labs(
-    title = "Cook's Distance — LASSO + BIC back",
-    x = "Observation index",
-    y = "Cook's Distance"
-  ) +
-  annotate("text", x = n * 0.75, y = 0.52,
-           label = "Cook's D = 0.5",
-           color = brand_colors["plum"], size = 3.5)
-
-# -------------------------------------------------
-# Cook's distance plot (cleaned)
-# -------------------------------------------------
-n <- nrow(diag_df)
-
-# Keep only the 6 highest Cook's D points for labeling
-top6 <- diag_df[order(-diag_df$cooksd), ][1:6, ]
-
-ggplot(diag_df, aes(x = obs, y = cooksd)) +
+cook_plot = ggplot(diag_df, aes(x = obs, y = cooksd)) +
   geom_point(alpha = 0.6, color = brand_colors["blue"]) +
   geom_hline(yintercept = 0.5, linetype = "dashed", color = brand_colors["plum"]) +
   geom_text(
@@ -811,11 +879,11 @@ ggplot(diag_df, aes(x = obs, y = cooksd)) +
   annotate("text", x = n * 0.75, y = 0.52,
            label = "Cook's D = 0.5",
            color = brand_colors["plum"], size = 3.5)
+save_plot(cook_plot, "Cook's Distance — LASSO + BIC back.png")
 
-# -------------------------------------------------
-# Residuals by Sale_Condition (diagnostics)
-# -------------------------------------------------
-
+# ----------------------------------------------------------------------------
+# 6. Residuals by sale condition
+# ----------------------------------------------------------------------------
 plot_df <- data.frame(
   residuals = diag_df$residuals,
   Sale_Condition = train$Sale_Condition
@@ -839,7 +907,7 @@ condition_colors <- c(
   brand_colors["salmon"]
 )
 
-ggplot(plot_df, aes(x = Sale_Condition_label, y = residuals, fill = Sale_Condition_label)) +
+plot_residuals_by_condition = ggplot(plot_df, aes(x = Sale_Condition_label, y = residuals, fill = Sale_Condition_label)) +
   geom_boxplot(
     color = brand_colors["field"],
     alpha = 0.85,
@@ -855,30 +923,25 @@ ggplot(plot_df, aes(x = Sale_Condition_label, y = residuals, fill = Sale_Conditi
     x = "Sale Condition",
     y = "Residuals (log scale)"
   ) +
-  theme(legend.position = "none")
+  theme(
+    legend.position = "none",
+    plot.title.position = "plot"
+  )
+save_plot(plot_residuals_by_condition, "Residuals by Sale Condition — LASSO + BIC back.png")
 
-# -------------------------------------------------
-# Breusch-Pagan test for heteroscedasticity
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
+# 7. Breusch-Pagan test
+# ----------------------------------------------------------------------------
 bptest(final_model)
 
 
+# ============================================================================
+# G. Results and visualizations
+# ============================================================================
 
-
-
-
-
-###
-# Results and visualizations
-###
-
-###
-# Results and visualizations
-###
-
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
 # 1. Coefficient table with percent effects
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
 coef_table <- broom::tidy(final_model) %>%
   filter(term != "(Intercept)") %>%
   mutate(
@@ -892,13 +955,12 @@ print(
   row.names = FALSE
 )
 
-# -------------------------------------------------
-# 2. Predicted vs Actual on the TEST set (log scale)
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
+# 2. Predicted vs actual — test set
+# ----------------------------------------------------------------------------
 x_test_full <- model.matrix(log(SalePrice) ~ . - 1, data = test)
 colnames(x_test_full) <- gsub("`", "", colnames(x_test_full))
 colnames(x_test_full) <- gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_test_full))
-colnames(x_test_full) <- gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_test_full))
 colnames(x_test_full) <- gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_test_full))
 
 model_vars <- setdiff(names(coef(final_model)), "(Intercept)")
@@ -918,7 +980,7 @@ test_fit_df <- data.frame(
   predicted = test_log_pred
 )
 
-ggplot(test_fit_df, aes(x = observed, y = predicted)) +
+plot_predicted_vs_actual = ggplot(test_fit_df, aes(x = observed, y = predicted)) +
   geom_point(alpha = 0.45, color = brand_colors["blue"]) +
   geom_abline(
     slope = 1, intercept = 0,
@@ -928,18 +990,20 @@ ggplot(test_fit_df, aes(x = observed, y = predicted)) +
   ) +
   portfolio_theme +
   labs(
-    title = "Predicted vs Actual (Test Set) — LASSO + BIC back",
+    title = "Predicted vs Actual — Test Set",
     subtitle = paste0(
       "Test RMSE = $", format(round(test_rmse), big.mark = ","),
-      "  |  Test MAPE = ", round(test_mape, 1), "%"
+      "  |  Test MAPE = ", round(test_mape, 1), "%",
+      "\nVisual spread reflects proportional error"
     ),
     x = "Observed log(SalePrice)",
     y = "Predicted log(SalePrice)"
   )
+save_plot(plot_predicted_vs_actual, "Predicted vs Actual (Test Set, log scale) — LASSO + BIC back.png")
 
-# -------------------------------------------------
-# 3. Standardized coefficient plot (top 15)
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
+# 3. Standardized coefficient plot
+# ----------------------------------------------------------------------------
 coef_model <- final_model
 coef_x <- model.matrix(coef_model)[, -1, drop = FALSE]
 coef_y <- model.response(model.frame(coef_model))
@@ -962,22 +1026,26 @@ coef_plot <- coef_std %>%
 
 coef_plot$term <- factor(coef_plot$term, levels = rev(coef_plot$term))
 
-ggplot(coef_plot, aes(x = term, y = std_estimate)) +
+plot_strongest_predictors = ggplot(coef_plot, aes(x = term, y = std_estimate)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["field"]) +
   geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.20, color = brand_colors["brick"]) +
   geom_point(size = 3, color = brand_colors["plum"]) +
   coord_flip() +
   portfolio_theme +
+  theme(
+    plot.title.position = "plot"
+  ) +
   labs(
     title = "Strongest Predictors in the Final BIC Model",
-    subtitle = "Standardized coefficients, top 15 by absolute magnitude (intervals nominal — see limitations)",
+    subtitle = "Top 15 standardized coefficients",
     x = NULL,
     y = "Standardized coefficient"
   )
+save_plot(plot_strongest_predictors, "Strongest Predictors in the Final BIC Model.png")
 
-# -------------------------------------------------
-# 4. Binned error metrics by actual SalePrice terciles (test set)
-# -------------------------------------------------
+# ----------------------------------------------------------------------------
+# 4. Error metrics by SalePrice tercile
+# ----------------------------------------------------------------------------
 binned_df <- data.frame(
   actual = test_actual_dollars,
   pred   = test_pred_dollars
@@ -1005,3 +1073,22 @@ binned_metrics <- binned_df %>%
   )
 
 print(binned_metrics, digits = 4)
+
+
+# ----------------------------------------------------------------------------
+# 5. Baseline model
+# ----------------------------------------------------------------------------
+# Two-variable model: Overall_Qual + Gr_Liv_Area
+baseline <- lm(log(SalePrice) ~ Overall_Qual + Gr_Liv_Area, data = train)
+
+# Predict on test set
+baseline_log_pred <- predict(baseline, newdata = test)
+baseline_pred     <- exp(baseline_log_pred)
+baseline_actual   <- test$SalePrice
+
+baseline_rmse <- sqrt(mean((baseline_actual - baseline_pred)^2))
+baseline_mape <- mean(abs(baseline_actual - baseline_pred) / baseline_actual) * 100
+
+cat("Baseline (Overall_Qual + Gr_Liv_Area)\n")
+cat("Test RMSE: $", format(round(baseline_rmse), big.mark = ","), "\n")
+cat("Test MAPE: ", round(baseline_mape, 1), "%\n", sep = "")
