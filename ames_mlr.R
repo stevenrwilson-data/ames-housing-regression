@@ -363,6 +363,39 @@ data %>%
 # Sale_Condition = Partial and Sale_Type = New explains it completely.
 # Leave the years exactly as they are. No fix needed.
 
+# Choose the candidate pool explicitly
+# Garage_Yr_Blt — 131 NAs, kills every garage-less house ~ dropping.
+# -- it is redundant, and the year a garage is built is not likely
+# a strong predictor of house price
+# Losing parts for SF, and parts for Bsmt to avoid perfect multi-colinearity
+# Drop definitionally redundant / highly collinear components
+# Keep the totals instead
+data$`1st_Flr_SF` = NULL
+data$`2nd_Flr_SF` = NULL
+data$Low_Qual_Fin_SF = NULL
+data$BsmtFin_SF_1 = NULL
+data$BsmtFin_SF_2 = NULL
+data$Bsmt_Unf_SF = NULL
+data$TotRms_AbvGrd = NULL
+data$Garage_Yr_Blt = NULL
+
+# How many rows still contain at least one NA?
+sum(!complete.cases(data))
+
+na_counts = colSums(is.na(data))
+na_counts[na_counts > 0]
+data$Lot_Frontage = NULL # var 464 NAs + weak signal low cor with SalesPrice
+# Fix the 23 masonry veneer missings, assumption: no recorded Vnr = no Vnr.
+# Note this is an inference, and possibly wrong, but the damage is only 23 rows
+data$Mas_Vnr_Type[is.na(data$Mas_Vnr_Type)] = "None"
+data$Mas_Vnr_Area[is.na(data$Mas_Vnr_Area)] = 0
+# Rebuild the indicator after the fix 
+data$Has_MasVnr = as.integer(data$Mas_Vnr_Type != "None") 
+sum(!complete.cases(data)) # 8 remaining NAs dropping them now:
+# Drop the final 8 incomplete rows
+data = data[complete.cases(data), ]
+nrow(data)
+
 
 
 
@@ -382,13 +415,6 @@ data = data %>% filter(Sale_Condition != "Abnorml")
 nrow(data)
 summary(data$SalePrice)
 
-
-# This is being added here after looking at residual plot that did not account 
-# for some anomalies at the high end, I am preserving the data set with those
-# anomalies to see the problems with the data on the diagnostic plots. 
-# Preserve the dataset that still contains the large Partial sales
-# (used for the diagnostic plots that revealed the problem)
-data_with_large_homes = data
 
 # Exclude very large houses (Gr_Liv_Area > 4000)
 # De Cock (dataset author) recommends this exclusion because these are
@@ -418,17 +444,12 @@ numeric_vars = data[sapply(data, is.numeric)]
 numeric_predictors = numeric_vars[, names(numeric_vars) != "SalePrice"]
 
 # Correlation matrix
-# suppressWarnings because Has_Garage is constant among rows
-# where Garage_Yr_Blt is non-missing
-cor_matrix = suppressWarnings(
-  cor(numeric_predictors, use = "pairwise.complete.obs")
-)
+cor_matrix = cor(numeric_predictors)
 
 # Correlations with log(SalePrice), strongest first
 log_price = log(data$SalePrice)
-
 cor_with_logprice = sort(
-  cor(numeric_predictors, log_price, use = "pairwise.complete.obs")[, 1],
+  cor(numeric_predictors, log_price)[, 1],
   decreasing = TRUE
 )
 head(cor_with_logprice, 10)
@@ -474,7 +495,7 @@ length(top_vars)
 top_vars
 
 # Correlation matrix of the top variables
-top_cor = cor(numeric_vars[, top_vars], use = "pairwise.complete.obs")
+top_cor = cor(numeric_vars[, top_vars], use = "complete.obs")
 
 # Convert to long format for ggplot
 cor_long = as.data.frame(as.table(top_cor))
@@ -510,298 +531,477 @@ ggplot(cor_long, aes(x = Var1, y = Var2, fill = Correlation)) +
 
 
 
-
+###
+# Multiple linear regression
+###
 
 ###
 # Multiple linear regression
 ###
 
-# Build the model matrix first (this drops incomplete rows)
-x = model.matrix(log(SalePrice) ~ . - 1, data = data)
-# Create y from the same rows that remain in x
-# model.matrix keeps the row names / order of the complete cases
-y = log(data$SalePrice[complete.cases(data)])
-
+# -------------------------------------------------
+# Train / Test split
+# -------------------------------------------------
 set.seed(42)
-cv_lasso = cv.glmnet(
-  x = x,
-  y = y,
+n <- nrow(data)
+train_idx <- sample(seq_len(n), size = floor(0.80 * n))
+
+train <- data[train_idx, ]
+test  <- data[-train_idx, ]
+
+# Save the two piles for Python
+write.csv(train, "train.csv", row.names = FALSE)
+write.csv(test,  "test.csv",  row.names = FALSE)
+
+nrow(train)
+nrow(test)
+
+# =========================================================
+# Model selection on TRAIN only
+# =========================================================
+
+# ----- 1. Design matrix and response (train only) -----
+x_train <- model.matrix(log(SalePrice) ~ . - 1, data = train)
+y_train <- log(train$SalePrice)
+
+# ----- 2. LASSO with cross-validation (train only) -----
+set.seed(42)
+cv_lasso <- cv.glmnet(
+  x = x_train,
+  y = y_train,
   alpha = 1,
   nfolds = 10
 )
 
-# Plot the CV curve
-plot(cv_lasso)
+# Coefficients at lambda.1se
+coef_1se <- coef(cv_lasso, s = "lambda.1se")
+selected_1se <- coef_1se[coef_1se[, 1] != 0, , drop = FALSE]
 
-## ggplot version
-# Extract the CV results into a data frame
-cv_df = data.frame(
-  lambda = cv_lasso$lambda,
-  cvm = cv_lasso$cvm,
-  cvsd = cv_lasso$cvsd,
-  nzero = cv_lasso$nzero
-)
-
-# Add the two special lambdas
-lambda_min = cv_lasso$lambda.min
-lambda_1se = cv_lasso$lambda.1se
-
-ggplot(cv_df, aes(x = -log(lambda), y = cvm)) +
-  geom_ribbon(aes(ymin = cvm - cvsd, ymax = cvm + cvsd), fill = "grey80", alpha = 0.5) +
-  geom_line(color = brand_colors["field"]) +
-  geom_point(color = brand_colors["plum"], size = 1.5) +
-  geom_vline(xintercept = -log(lambda_min), linetype = "dashed", color = brand_colors["blue"]) +
-  geom_vline(xintercept = -log(lambda_1se), linetype = "dashed", color = brand_colors["brick"]) +
-  portfolio_theme +
-  labs(
-    title = "LASSO Cross-Validation",
-    x = "-log(λ)",
-    y = "Mean Squared Error"
-  )
-
-# Coefficients at lambda.min (best predictive accuracy)
-coef_min = coef(cv_lasso, s = "lambda.min")
-selected_min = coef_min[coef_min[,1] != 0, , drop = FALSE]
-selected_min
-
-# Coefficients at lambda.1se (preferred simpler model)
-coef_1se = coef(cv_lasso, s = "lambda.1se")
-selected_1se = coef_1se[coef_1se[,1] != 0, , drop = FALSE]
-selected_1se
-
-# Quick comparison of how many variables each kept
-cat("lambda.min kept:", nrow(selected_min) - 1, "predictors\n")  # subtract intercept
 cat("lambda.1se kept:", nrow(selected_1se) - 1, "predictors\n")
 
+# ----- 3. Refit OLS on the LASSO 1se variables (train only) -----
+selected_vars <- setdiff(rownames(selected_1se), "(Intercept)")
+x_clean <- x_train[, selected_vars, drop = FALSE]
 
-# Quick comparison of how many variables each kept
-cat("lambda.min kept:", nrow(selected_min) - 1, "predictors\n")
-cat("lambda.1se kept:", nrow(selected_1se) - 1, "predictors\n")
+# Clean ugly names
+colnames(x_clean) <- gsub("`", "", colnames(x_clean))
+colnames(x_clean) <- gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_clean))
+colnames(x_clean) <- gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_clean))
+colnames(x_clean) <- gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_clean))
 
-# Create the full model matrix again
-x_full = model.matrix(log(SalePrice) ~ . - 1, data = data)
-y = log(data$SalePrice[complete.cases(data)])
-
-# Keep only the columns that LASSO 1se selected
-selected_vars = setdiff(rownames(selected_1se), "(Intercept)")
-x_1se = x_full[, selected_vars, drop = FALSE]
-
-# Refit OLS on the selected columns
-ols_1se = lm(y ~ x_1se)
-
+ols_1se <- lm(y_train ~ ., data = as.data.frame(x_clean))
 summary(ols_1se)
 
-# clean up ugly variable names
-# Get the selected variable names from LASSO
-selected_vars = setdiff(rownames(selected_1se), "(Intercept)")
+# ----- 4. AIC and BIC stepwise (train only) -----
+ols_aic <- step(ols_1se, direction = "backward", trace = 0)
+ols_bic <- step(ols_1se, direction = "backward", k = log(nrow(x_clean)), trace = 0)
 
-# Create a clean model matrix with only those columns
-x_clean = x_full[, selected_vars]
-colnames(x_clean) = selected_vars   # keep the original glmnet names but drop the x_1se prefix later if desired
+cat("AIC stepwise predictors:", length(coef(ols_aic)) - 1, "\n")
+cat("BIC stepwise predictors:", length(coef(ols_bic)) - 1, "\n")
 
-# Refit with cleaner call
-ols_1se = lm(y ~ ., data = as.data.frame(x_clean))
+summary(ols_aic)
+summary(ols_bic)
 
-summary(ols_1se)
-
-## fixing last straggler ugly variables
-# Clean the problematic names
-colnames(x_clean) = gsub("`", "", colnames(x_clean))
-colnames(x_clean) = gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_clean))
-colnames(x_clean) = gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_clean))
-colnames(x_clean) = gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_clean))
-
-# Refit one more time with the cleaned names
-ols_1se = lm(y ~ ., data = as.data.frame(x_clean))
-summary(ols_1se)
-
-# Start with the 39-variable OLS model
-# Backward stepwise using AIC (common and reproducible)
-ols_small = step(ols_1se, direction = "backward", trace = 0)
-
-# See what it kept
-summary(ols_small)
-
-# How many predictors remain?
-length(coef(ols_small)) - 1
-# only drops 3 variables
-
-# Trying BIC
-ols_small = step(ols_1se, direction = "backward", k = log(nrow(x_clean)), trace = 0)
-
-summary(ols_small)
-length(coef(ols_small)) - 1
-
-###
-## comparing the 3 models
-###
-# Make sure we have all three models
-# ols_1se  = 39-variable model (LASSO 1se + OLS)
-# ols_aic  = AIC stepwise version
-# ols_small = BIC stepwise version (already created)
-
-# Recreate the AIC version for completeness
-ols_aic = step(ols_1se, direction = "backward", trace = 0)
-
-# Side-by-side comparison
-comparison = data.frame(
-  Model = c("LASSO 1se + OLS", "AIC stepwise", "BIC stepwise"),
-  Predictors = c(
-    length(coef(ols_1se)) - 1,
-    length(coef(ols_aic)) - 1,
-    length(coef(ols_small)) - 1
-  ),
-  Adj_R2 = c(
-    summary(ols_1se)$adj.r.squared,
-    summary(ols_aic)$adj.r.squared,
-    summary(ols_small)$adj.r.squared
-  ),
-  Residual_SE = c(
-    summary(ols_1se)$sigma,
-    summary(ols_aic)$sigma,
-    summary(ols_small)$sigma
+# =========================================================
+# Evaluation function
+# =========================================================
+get_metrics <- function(model, name, train_data, test_data) {
+  
+  s <- summary(model)
+  
+  # Train metrics
+  train_log_pred <- fitted(model)
+  train_pred     <- exp(train_log_pred)
+  train_actual   <- exp(model$model[[1]])
+  
+  # Test design matrix
+  x_test_full <- model.matrix(log(SalePrice) ~ . - 1, data = test_data)
+  
+  # Clean names the same way we cleaned the training matrix
+  colnames(x_test_full) <- gsub("`", "", colnames(x_test_full))
+  colnames(x_test_full) <- gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_test_full))
+  colnames(x_test_full) <- gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_test_full))
+  colnames(x_test_full) <- gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_test_full))
+  
+  model_vars <- setdiff(names(coef(model)), "(Intercept)")
+  x_test <- x_test_full[, model_vars, drop = FALSE]
+  
+  test_log_pred <- predict(model, newdata = as.data.frame(x_test))
+  test_pred     <- exp(test_log_pred)
+  test_actual   <- test_data$SalePrice
+  
+  data.frame(
+    Model       = name,
+    Predictors  = length(coef(model)) - 1,
+    
+    # Train
+    Adj_R2      = s$adj.r.squared,
+    Residual_SE = s$sigma,
+    AIC         = AIC(model),
+    BIC         = BIC(model),
+    
+    # Test (original dollar scale)
+    Test_RMSE   = sqrt(mean((test_actual - test_pred)^2)),
+    Test_MAE    = mean(abs(test_actual - test_pred)),
+    Test_MAPE   = mean(abs((test_actual - test_pred) / test_actual)) * 100
   )
+}
+
+# =========================================================
+# Final comparison table
+# =========================================================
+comparison <- rbind(
+  get_metrics(ols_1se, "LASSO 1se + OLS",   train, test),
+  get_metrics(ols_aic, "LASSO + AIC back",  train, test),
+  get_metrics(ols_bic, "LASSO + BIC back",  train, test)
 )
 
-print(comparison)
+print(comparison, digits = 5, row.names = FALSE)
 
 
 
-###
+
+
+
+
+
+
+
+####
 # Model diagnostics
 ###
 
-# List of models
-models = list(
-  "LASSO 1se (39)" = ols_1se,
-  "AIC (36)" = ols_aic,
-  "BIC (30)" = ols_small
+# Choose the model to diagnose BIC
+final_model <- ols_bic
+
+# -------------------------------------------------
+# Diagnostic data
+# -------------------------------------------------
+diag_df <- data.frame(
+  obs        = seq_len(nrow(model.frame(final_model))),
+  fitted     = fitted(final_model),
+  residuals  = residuals(final_model),
+  std_resid  = rstandard(final_model),
+  leverage   = hatvalues(final_model),
+  cooksd     = cooks.distance(final_model)
 )
 
-# Function to create diagnostic data
-get_diag = function(model) {
-  data.frame(
-    obs = rownames(model.frame(model)),
-    fitted = fitted(model),
-    residuals = residuals(model),
-    std_resid = rstandard(model),
-    leverage = hatvalues(model)
-  )
-}
+# Identify the most extreme points for labeling
+high_lev_idx  <- which.max(diag_df$leverage)
+high_cook_idx <- which.max(diag_df$cooksd)
+label_idx     <- unique(c(high_lev_idx, high_cook_idx))
+label_df      <- diag_df[label_idx, ]
 
-# Generate diagnostic plots for each model
-for (name in names(models)) {
-  diag_df = get_diag(models[[name]])
-  
-  # Residuals vs Fitted
-  p1 = ggplot(diag_df, aes(x = fitted, y = residuals)) +
-    geom_point(alpha = 0.5, color = brand_colors["blue"]) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
-    geom_smooth(se = FALSE, color = brand_colors["brick"]) +
-    portfolio_theme +
-    labs(title = paste("Residuals vs Fitted -", name),
-         x = "Fitted values", y = "Residuals")
-  print(p1)
-  
-  # Normal Q-Q
-  p2 = ggplot(diag_df, aes(sample = std_resid)) +
-    stat_qq(alpha = 0.5, color = brand_colors["blue"]) +
-    stat_qq_line(color = brand_colors["plum"]) +
-    portfolio_theme +
-    labs(title = paste("Normal Q-Q -", name),
-         x = "Theoretical quantiles", y = "Standardized residuals")
-  print(p2)
-}
+# -------------------------------------------------
+# 2x2 diagnostic plots
+# -------------------------------------------------
 
-## using patchwork to make 2x2 ggplots
-# Generate 2x2 diagnostic grids for each model
-for (name in names(models)) {
-  
-  diag_df = get_diag(models[[name]])
-  
-  # identify the single highest-leverage observation
-  target_idx = which.max(diag_df$leverage)
-  target_obs = diag_df$obs[target_idx]
-  label_df = diag_df[target_idx, ]
-  
-  # data for QQ plot so the same observation can be labeled there too
-  qq_df = diag_df[order(diag_df$std_resid), ]
-  qq_df$theoretical = qnorm(ppoints(nrow(qq_df)))
-  
-  qq_label_df = qq_df[qq_df$obs == target_obs, ]
-  
-  # 1. Residuals vs Fitted
-  p1 = ggplot(diag_df, aes(x = fitted, y = residuals)) +
-    geom_point(alpha = 0.5, color = brand_colors["blue"]) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
-    geom_smooth(se = FALSE, color = brand_colors["brick"], linewidth = 0.8) +
-    geom_text(
-      data = label_df,
-      aes(label = obs),
-      nudge_y = 0.02,
-      size = 4
-    ) +
-    portfolio_theme +
-    labs(title = "Residuals vs Fitted", x = "Fitted values", y = "Residuals")
-  
-  # 2. Normal Q-Q
-  p2 = ggplot(qq_df, aes(x = theoretical, y = std_resid)) +
-    geom_point(alpha = 0.5, color = brand_colors["blue"]) +
-    geom_abline(slope = 1, intercept = 0, color = brand_colors["plum"]) +
-    geom_text(
-      data = qq_label_df,
-      aes(x = theoretical, y = std_resid, label = obs),
-      nudge_y = 0.2,
-      size = 4
-    ) +
-    portfolio_theme +
-    labs(title = "Normal Q-Q", x = "Theoretical Quantiles", y = "Standardized Residuals")
-  
-  # 3. Scale-Location
-  p3 = ggplot(diag_df, aes(x = fitted, y = sqrt(abs(std_resid)))) +
-    geom_point(alpha = 0.5, color = brand_colors["blue"]) +
-    geom_smooth(se = FALSE, color = brand_colors["brick"], linewidth = 0.8) +
-    geom_text(
-      data = transform(label_df, sl_y = sqrt(abs(std_resid))),
-      aes(x = fitted, y = sl_y, label = obs),
-      nudge_y = 0.05,
-      size = 4
-    ) +
-    portfolio_theme +
-    labs(title = "Scale-Location", x = "Fitted values", y = "√|Std. Residuals|")
-  
-  # 4. Residuals vs Leverage
-  p4 = ggplot(diag_df, aes(x = leverage, y = std_resid)) +
-    geom_point(alpha = 0.5, color = brand_colors["blue"]) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
-    geom_text(
-      data = label_df,
-      aes(label = obs),
-      nudge_y = 0.25,
-      hjust = 1,
-      size = 4
-    ) +
-    portfolio_theme +
-    labs(title = "Residuals vs Leverage", x = "Leverage", y = "Standardized Residuals")
-  
-  # 2x2 grid for this model
-  grid = (p1 + p2) / (p3 + p4) +
-    plot_annotation(title = paste("Diagnostics -", name))
-  
-  print(grid)
-}
+# 1. Residuals vs Fitted
+p1 <- ggplot(diag_df, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.5, color = brand_colors["blue"]) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
+  geom_smooth(se = FALSE, color = brand_colors["brick"], linewidth = 0.8) +
+  geom_text(data = label_df, aes(label = obs), nudge_y = 0.03, size = 3.5) +
+  portfolio_theme +
+  labs(title = "Residuals vs Fitted", x = "Fitted values", y = "Residuals")
+
+# 2. Normal Q-Q
+qq_df <- diag_df[order(diag_df$std_resid), ]
+qq_df$theoretical <- qnorm(ppoints(nrow(qq_df)))
+qq_label <- qq_df[qq_df$obs %in% label_df$obs, ]
+
+p2 <- ggplot(qq_df, aes(x = theoretical, y = std_resid)) +
+  geom_point(alpha = 0.5, color = brand_colors["blue"]) +
+  geom_abline(slope = 1, intercept = 0, color = brand_colors["plum"]) +
+  geom_text(data = qq_label, aes(label = obs), nudge_y = 0.25, size = 3.5) +
+  portfolio_theme +
+  labs(title = "Normal Q-Q", x = "Theoretical Quantiles", y = "Standardized Residuals")
+
+# 3. Scale-Location
+p3 <- ggplot(diag_df, aes(x = fitted, y = sqrt(abs(std_resid)))) +
+  geom_point(alpha = 0.5, color = brand_colors["blue"]) +
+  geom_smooth(se = FALSE, color = brand_colors["brick"], linewidth = 0.8) +
+  geom_text(data = transform(label_df, y = sqrt(abs(std_resid))),
+            aes(x = fitted, y = y, label = obs), nudge_y = 0.05, size = 3.5) +
+  portfolio_theme +
+  labs(title = "Scale-Location", x = "Fitted values", y = expression(sqrt("|Std. Residuals|")))
+
+# 4. Residuals vs Leverage
+p4 <- ggplot(diag_df, aes(x = leverage, y = std_resid)) +
+  geom_point(alpha = 0.5, color = brand_colors["blue"]) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"]) +
+  geom_text(data = label_df, aes(label = obs), nudge_y = 0.3, hjust = 1, size = 3.5) +
+  portfolio_theme +
+  labs(title = "Residuals vs Leverage", x = "Leverage", y = "Standardized Residuals")
+
+# Combine into 2x2
+(p1 + p2) / (p3 + p4) +
+  plot_annotation(title = "Diagnostics — LASSO + BIC back")
+
+# -------------------------------------------------
+# 1. Highest Cook's distances
+# -------------------------------------------------
+finite <- is.finite(diag_df$cooksd)
+head(diag_df[finite, ][order(-diag_df$cooksd[finite]), ], 10)
+
+# -------------------------------------------------
+# 2. Worst (most negative) residuals
+# -------------------------------------------------
+worst <- order(diag_df$residuals)[1:10]
+train[worst, c("SalePrice", "Gr_Liv_Area", "Overall_Qual", "Overall_Cond",
+               "Neighborhood", "Sale_Condition", "Sale_Type", "Year_Built")]
+
+# -------------------------------------------------
+# 3. Highest VIFs
+# -------------------------------------------------
+sort(vif(final_model), decreasing = TRUE)[1:10]
+
+# -------------------------------------------------
+# Cook's distance plot (cleaned)
+# -------------------------------------------------
+n <- nrow(diag_df)
+
+# Keep only the 6 highest Cook's D points for labeling
+top6 <- diag_df[order(-diag_df$cooksd), ][1:6, ]
+
+ggplot(diag_df, aes(x = obs, y = cooksd)) +
+  geom_point(alpha = 0.6, color = brand_colors["blue"]) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = brand_colors["plum"]) +
+  geom_text(
+    data = top6,
+    aes(label = obs),
+    nudge_y = 0.008,
+    size = 3.5
+  ) +
+  coord_cartesian(ylim = c(0, 0.25)) +
+  portfolio_theme +
+  labs(
+    title = "Cook's Distance — LASSO + BIC back",
+    x = "Observation index",
+    y = "Cook's Distance"
+  ) +
+  annotate("text", x = n * 0.75, y = 0.52,
+           label = "Cook's D = 0.5",
+           color = brand_colors["plum"], size = 3.5)
+
+# -------------------------------------------------
+# Cook's distance plot (cleaned)
+# -------------------------------------------------
+n <- nrow(diag_df)
+
+# Keep only the 6 highest Cook's D points for labeling
+top6 <- diag_df[order(-diag_df$cooksd), ][1:6, ]
+
+ggplot(diag_df, aes(x = obs, y = cooksd)) +
+  geom_point(alpha = 0.6, color = brand_colors["blue"]) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = brand_colors["plum"]) +
+  geom_text(
+    data = top6,
+    aes(label = obs),
+    nudge_y = 0.008,
+    size = 3.5
+  ) +
+  coord_cartesian(ylim = c(0, 0.55)) +
+  portfolio_theme +
+  labs(
+    title = "Cook's Distance — LASSO + BIC back",
+    x = "Observation index",
+    y = "Cook's Distance"
+  ) +
+  annotate("text", x = n * 0.75, y = 0.52,
+           label = "Cook's D = 0.5",
+           color = brand_colors["plum"], size = 3.5)
+
+# -------------------------------------------------
+# Residuals by Sale_Condition (diagnostics)
+# -------------------------------------------------
+
+plot_df <- data.frame(
+  residuals = diag_df$residuals,
+  Sale_Condition = train$Sale_Condition
+)
+
+counts <- table(plot_df$Sale_Condition)
+label_levels <- paste0(names(counts), "\n(n = ", counts, ")")
+
+plot_df$Sale_Condition_label <- factor(
+  plot_df$Sale_Condition,
+  levels = names(counts),
+  labels = label_levels
+)
+
+# Unnamed vector — assigned by position to the factor levels
+condition_colors <- c(
+  brand_colors["blue"],
+  brand_colors["plum"],
+  brand_colors["brick"],
+  brand_colors["field"],
+  brand_colors["salmon"]
+)
+
+ggplot(plot_df, aes(x = Sale_Condition_label, y = residuals, fill = Sale_Condition_label)) +
+  geom_boxplot(
+    color = brand_colors["field"],
+    alpha = 0.85,
+    outlier.color = brand_colors["brick"],
+    outlier.alpha = 0.7,
+    outlier.size = 1.8
+  ) +
+  scale_fill_manual(values = unname(condition_colors)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["plum"], linewidth = 0.9) +
+  portfolio_theme +
+  labs(
+    title = "Residuals by Sale Condition — LASSO + BIC back",
+    x = "Sale Condition",
+    y = "Residuals (log scale)"
+  ) +
+  theme(legend.position = "none")
+
+# -------------------------------------------------
+# Breusch-Pagan test for heteroscedasticity
+# -------------------------------------------------
+bptest(final_model)
+
+
+
+
+
 
 
 ###
 # Results and visualizations
 ###
 
-# Standardized coefficients for the BIC model
-library(lm.beta)   # or use the version below if you don’t want another package
+###
+# Results and visualizations
+###
 
-# Base R version (no extra package)
-std_coefs = coef(final_model)[-1] * sapply(as.data.frame(x_clean)[names(coef(final_model))[-1]], sd) / sd(y)
+# -------------------------------------------------
+# 1. Coefficient table with percent effects
+# -------------------------------------------------
+coef_table <- broom::tidy(final_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    pct_effect = (exp(estimate) - 1) * 100
+  ) %>%
+  arrange(desc(abs(estimate)))
 
-# Rank them
-std_coefs_sorted = sort(abs(std_coefs), decreasing = TRUE)
-std_coefs_sorted
+print(
+  coef_table[, c("term", "estimate", "pct_effect")],
+  digits = 4,
+  row.names = FALSE
+)
+
+# -------------------------------------------------
+# 2. Predicted vs Actual on the TEST set (log scale)
+# -------------------------------------------------
+x_test_full <- model.matrix(log(SalePrice) ~ . - 1, data = test)
+colnames(x_test_full) <- gsub("`", "", colnames(x_test_full))
+colnames(x_test_full) <- gsub("Year_Remod/Add", "Year_Remod_Add", colnames(x_test_full))
+colnames(x_test_full) <- gsub("1st_Flr_SF", "First_Flr_SF", colnames(x_test_full))
+colnames(x_test_full) <- gsub("MS_ZoningC \\(all\\)", "MS_Zoning_C_all", colnames(x_test_full))
+
+model_vars <- setdiff(names(coef(final_model)), "(Intercept)")
+x_test <- x_test_full[, model_vars, drop = FALSE]
+
+test_log_pred   <- predict(final_model, newdata = as.data.frame(x_test))
+test_log_actual <- log(test$SalePrice)
+
+test_pred_dollars   <- exp(test_log_pred)
+test_actual_dollars <- test$SalePrice
+
+test_rmse <- sqrt(mean((test_actual_dollars - test_pred_dollars)^2))
+test_mape <- mean(abs(test_actual_dollars - test_pred_dollars) / test_actual_dollars) * 100
+
+test_fit_df <- data.frame(
+  observed  = test_log_actual,
+  predicted = test_log_pred
+)
+
+ggplot(test_fit_df, aes(x = observed, y = predicted)) +
+  geom_point(alpha = 0.45, color = brand_colors["blue"]) +
+  geom_abline(
+    slope = 1, intercept = 0,
+    linetype = "dashed",
+    color = brand_colors["brick"],
+    linewidth = 0.8
+  ) +
+  portfolio_theme +
+  labs(
+    title = "Predicted vs Actual (Test Set) — LASSO + BIC back",
+    subtitle = paste0(
+      "Test RMSE = $", format(round(test_rmse), big.mark = ","),
+      "  |  Test MAPE = ", round(test_mape, 1), "%"
+    ),
+    x = "Observed log(SalePrice)",
+    y = "Predicted log(SalePrice)"
+  )
+
+# -------------------------------------------------
+# 3. Standardized coefficient plot (top 15)
+# -------------------------------------------------
+coef_model <- final_model
+coef_x <- model.matrix(coef_model)[, -1, drop = FALSE]
+coef_y <- model.response(model.frame(coef_model))
+
+coef_std <- broom::tidy(coef_model) %>%
+  filter(term != "(Intercept)")
+
+x_sd <- apply(coef_x, 2, sd)
+y_sd <- sd(coef_y)
+
+coef_std$std_estimate <- coef_std$estimate * x_sd[coef_std$term] / y_sd
+coef_std$std_se       <- coef_std$std.error * x_sd[coef_std$term] / y_sd
+coef_std$lower        <- coef_std$std_estimate - 1.96 * coef_std$std_se
+coef_std$upper        <- coef_std$std_estimate + 1.96 * coef_std$std_se
+coef_std$abs_std      <- abs(coef_std$std_estimate)
+
+coef_plot <- coef_std %>%
+  arrange(desc(abs_std)) %>%
+  slice_head(n = 15)
+
+coef_plot$term <- factor(coef_plot$term, levels = rev(coef_plot$term))
+
+ggplot(coef_plot, aes(x = term, y = std_estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = brand_colors["field"]) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.20, color = brand_colors["brick"]) +
+  geom_point(size = 3, color = brand_colors["plum"]) +
+  coord_flip() +
+  portfolio_theme +
+  labs(
+    title = "Strongest Predictors in the Final BIC Model",
+    subtitle = "Standardized coefficients, top 15 by absolute magnitude (intervals nominal — see limitations)",
+    x = NULL,
+    y = "Standardized coefficient"
+  )
+
+# -------------------------------------------------
+# 4. Binned error metrics by actual SalePrice terciles (test set)
+# -------------------------------------------------
+binned_df <- data.frame(
+  actual = test_actual_dollars,
+  pred   = test_pred_dollars
+)
+
+breaks <- quantile(binned_df$actual, probs = c(0, 1/3, 2/3, 1))
+
+binned_df$tercile <- cut(
+  binned_df$actual,
+  breaks = breaks,
+  include.lowest = TRUE,
+  labels = c("Low", "Mid", "High")
+)
+
+binned_metrics <- binned_df %>%
+  group_by(tercile) %>%
+  summarise(
+    n          = n(),
+    price_min  = min(actual),
+    price_max  = max(actual),
+    RMSE       = sqrt(mean((actual - pred)^2)),
+    MAE        = mean(abs(actual - pred)),
+    MAPE       = mean(abs(actual - pred) / actual) * 100,
+    .groups = "drop"
+  )
+
+print(binned_metrics, digits = 4)
