@@ -54,6 +54,7 @@
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+import matplotlib.pyplot as plt
 from sklearn.linear_model import Lasso, LassoCV
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
@@ -769,3 +770,204 @@ print(f"Predictors retained: {len(final_predictors)}")
 print("\nFinal predictors")
 for predictor in final_predictors:
     print(predictor)
+
+# ============================================================
+# H. Final model visualization
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Predicted vs actual — test set
+# ------------------------------------------------------------
+
+# Recalculate the final BIC model's test-set metrics directly
+# from the predictions that will be used in the plot.
+plot_rmse, plot_mae, plot_mape = calculate_metrics(
+    actual_price,
+    pred_bic
+)
+
+# Verify that the plotted predictions reproduce the previously
+# reported BIC test performance before creating the figure.
+expected_rmse = 21134
+expected_mape = 7.70
+
+if (
+    round(plot_rmse) != expected_rmse
+    or round(plot_mape, 2) != expected_mape
+):
+    raise ValueError(
+        "BIC plot metrics do not match the expected results.\n"
+        f"Expected RMSE: ${expected_rmse:,.0f}; "
+        f"calculated: ${plot_rmse:,.0f}\n"
+        f"Expected MAPE: {expected_mape:.2f}%; "
+        f"calculated: {plot_mape:.2f}%"
+    )
+
+
+# The observed response is already stored on the log scale.
+observed_log_price = y_test.to_numpy()
+
+# pred_bic is stored in dollars, so convert it back to the
+# log scale used by the regression model and the R comparison plot.
+predicted_log_price = np.log(pred_bic)
+
+
+# Exact colors used by the R portfolio theme.
+field = "#041F2C"
+blue = "#08415C"
+plum = "#511730"
+brick = "#8E443D"
+salmon = "#F7A399"
+plate = "#F4F0E6"
+
+
+# Create a square figure matching the dimensions and general
+# appearance of the corresponding R plot.
+fig, ax = plt.subplots(
+    figsize=(8, 8),
+    facecolor=plate
+)
+
+ax.set_facecolor(plate)
+
+
+# Plot observed versus predicted log(SalePrice).
+# Transparency makes the dense center of the distribution visible.
+ax.scatter(
+    observed_log_price,
+    predicted_log_price,
+    s=34,
+    alpha=0.45,
+    facecolor=blue,
+    edgecolor=field,
+    linewidth=0.5
+)
+
+
+# Explicit axis limits are required so the Python and R figures
+# use exactly the same plotting range.
+axis_min = 10.5
+axis_max = 13.4
+
+ax.set_xlim(axis_min, axis_max)
+ax.set_ylim(axis_min, axis_max)
+
+
+# Add the y = x reference line.
+ax.plot(
+    [axis_min, axis_max],
+    [axis_min, axis_max],
+    linestyle="--",
+    linewidth=1.6,
+    color=brick
+)
+
+
+# Use identical tick locations on both axes.
+axis_ticks = np.arange(10.5, 13.1, 0.5)
+
+ax.set_xticks(axis_ticks)
+ax.set_yticks(axis_ticks)
+
+
+# Equal scaling makes the y = x line appear at 45 degrees.
+ax.set_aspect(
+    "equal",
+    adjustable="box"
+)
+
+
+# Match the minimal R grid styling.
+ax.set_axisbelow(True)
+
+ax.grid(
+    True,
+    which="major",
+    color=salmon,
+    linewidth=0.6
+)
+
+ax.minorticks_off()
+
+
+# Remove the surrounding box, matching theme_minimal() in R.
+for spine in ax.spines.values():
+    spine.set_visible(False)
+
+
+# Format tick labels.
+ax.tick_params(
+    axis="both",
+    which="both",
+    length=0,
+    labelsize=12,
+    colors=field
+)
+
+
+# Axis labels.
+ax.set_xlabel(
+    "Observed log(SalePrice)",
+    fontsize=13,
+    fontfamily="Montserrat",
+    color=field,
+    labelpad=10
+)
+
+ax.set_ylabel(
+    "Predicted log(SalePrice)",
+    fontsize=13,
+    fontfamily="Montserrat",
+    color=field,
+    labelpad=10
+)
+
+
+# Leave space above the plotting panel for the title and subtitle.
+fig.subplots_adjust(
+    left=0.14,
+    right=0.97,
+    bottom=0.11,
+    top=0.83
+)
+
+
+# Left-aligned title.
+fig.text(
+    0.14,
+    0.965,
+    "Predicted vs Actual — Test Set (Python)",
+    ha="left",
+    va="top",
+    fontsize=18,
+    fontfamily="Archivo Black",
+    fontweight="bold",
+    color=plum
+)
+
+
+# Two-line subtitle using the metrics calculated from pred_bic.
+fig.text(
+    0.14,
+    0.915,
+    (
+        f"Test RMSE = ${plot_rmse:,.0f}  |  "
+        f"Test MAPE = {plot_mape:.2f}%\n"
+        "Visual spread reflects proportional error"
+    ),
+    ha="left",
+    va="top",
+    fontsize=13,
+    fontfamily="Montserrat",
+    color=field
+)
+
+
+# Save at the same 200-dpi resolution used for the R portfolio plots.
+fig.savefig(
+    "Predicted vs Actual — Test Set (Python).png",
+    dpi=200,
+    facecolor=plate
+)
+
+plt.close(fig)
