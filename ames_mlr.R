@@ -39,6 +39,9 @@
 #    5. Cook's distance, residuals, and VIF
 #    6. Residuals by sale condition
 #    7. Breusch-Pagan test
+#    8. High-leverage observations
+#    9. Rare design-matrix columns
+#   10. Residual spread by sale condition
 #
 # G. Results and visualizations
 #    1. Coefficient table with percent effects
@@ -46,6 +49,9 @@
 #    3. Standardized coefficient plot
 #    4. Error metrics by SalePrice tercile
 #    5. Baseline model
+#
+# H. Pre-registered exploratory comparison
+#    1. Training-only top-20 rankings and test evaluation
 # ============================================================================
 
 # ============================================================================
@@ -932,7 +938,61 @@ save_plot(plot_residuals_by_condition, "Residuals by Sale Condition — LASSO + 
 # ----------------------------------------------------------------------------
 # 7. Breusch-Pagan test
 # ----------------------------------------------------------------------------
+
+# Test for heteroskedasticity in the final regression model
 bptest(final_model)
+
+
+# ----------------------------------------------------------------------------
+# 8. High-leverage observations
+# ----------------------------------------------------------------------------
+
+# Examine leverage values from the already-fitted BIC model
+hv <- hatvalues(ols_bic)
+
+# Count observations with leverage greater than 0.99
+sum(hv > 0.99)
+
+# Identify those high-leverage observations
+which(hv > 0.99)
+
+# Inspect their standardized residuals
+rstandard(ols_bic)[hv > 0.99]
+
+
+# ----------------------------------------------------------------------------
+# 9. Rare design-matrix columns
+# ----------------------------------------------------------------------------
+
+# Inspect the design matrix from the already-fitted BIC model
+X <- model.matrix(ols_bic)
+
+# Sum each design-matrix column
+cs <- colSums(X)
+
+# Show rare indicator columns supported by 1 to 9 observations
+sort(cs[cs > 0 & cs <= 9])
+
+
+# ----------------------------------------------------------------------------
+# 10. Residual spread by sale condition
+# ----------------------------------------------------------------------------
+
+# Match model residuals to the corresponding rows in the training data
+model_rows <- match(
+  names(resid(ols_bic)),
+  rownames(train)
+)
+
+# Compare residual dispersion across sale-condition groups
+tapply(
+  resid(ols_bic),
+  train$Sale_Condition[model_rows],
+  IQR,
+  na.rm = TRUE
+)
+
+
 
 
 # ============================================================================
@@ -1092,3 +1152,486 @@ baseline_mape <- mean(abs(baseline_actual - baseline_pred) / baseline_actual) * 
 cat("Baseline (Overall_Qual + Gr_Liv_Area)\n")
 cat("Test RMSE: $", format(round(baseline_rmse), big.mark = ","), "\n")
 cat("Test MAPE: ", round(baseline_mape, 1), "%\n", sep = "")
+
+# ============================================================================
+# H. Pre-registered exploratory comparison
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Training-only top-20 rankings and test evaluation
+# ----------------------------------------------------------------------------
+
+# This exploratory comparison was specified after the main analysis was
+# complete but before these additional models were run.
+#
+# All three predictor rankings below are computed from the training data only.
+# None of the ranking rules uses test-set performance.
+# The ranking and evaluation rule was specified before running this section.
+# Therefore, the three additional test-set evaluations are legitimate
+# out-of-sample estimates rather than protocol violations.
+#
+# This section is read-only with respect to the completed analysis:
+# it does not modify train, test, ols_bic, or any other existing object.
+# All temporary objects are created inside a local environment and disappear
+# after this section finishes.
+
+local({
+  
+  # --------------------------------------------------------------------------
+  # Rebuild the full training design matrix used by the original LASSO stage
+  # --------------------------------------------------------------------------
+  
+  # Use the same cleaned predictor pool and model-matrix specification as the
+  # original LASSO analysis. These are design-matrix columns, including the
+  # dummy variables created from categorical predictors.
+  explore_x_train <- model.matrix(
+    log(SalePrice) ~ . - 1,
+    data = train
+  )
+  
+  explore_y_train <- log(train$SalePrice)
+  
+  # Stop rather than silently changing the ranking rule if the design matrix
+  # contains duplicate column names.
+  if (anyDuplicated(colnames(explore_x_train)) > 0) {
+    stop(
+      "Exploratory comparison stopped: the training design matrix contains ",
+      "duplicate predictor names."
+    )
+  }
+  
+  # Pearson correlation and standardized coefficients are undefined for
+  # predictors with zero variance. Report them and stop rather than dropping
+  # them or substituting another ranking rule.
+  explore_sd <- apply(explore_x_train, 2, sd)
+  
+  if (any(!is.finite(explore_sd) | explore_sd == 0)) {
+    
+    explore_bad_sd <- names(
+      explore_sd[!is.finite(explore_sd) | explore_sd == 0]
+    )
+    
+    cat(
+      "\nExploratory comparison stopped.\n",
+      "The following full-design-matrix predictors have zero or undefined ",
+      "training-set variance:\n\n",
+      sep = ""
+    )
+    
+    print(explore_bad_sd)
+    
+    stop(
+      "The requested marginal-correlation and standardized-coefficient ",
+      "rankings cannot be computed as specified. No alternate rule was used."
+    )
+  }
+  
+  
+  # --------------------------------------------------------------------------
+  # Ranking 1: marginal correlation
+  # --------------------------------------------------------------------------
+  
+  # Compute the absolute Pearson correlation of every training predictor with
+  # log(SalePrice), rank from largest to smallest, and retain the top 20.
+  explore_cor <- cor(
+    explore_x_train,
+    explore_y_train,
+    method = "pearson"
+  )[, 1]
+  
+  # Stop if any correlation is undefined rather than substituting another rule.
+  if (any(!is.finite(explore_cor))) {
+    
+    explore_bad_cor <- names(explore_cor[!is.finite(explore_cor)])
+    
+    cat(
+      "\nExploratory comparison stopped.\n",
+      "Pearson correlation is undefined for:\n\n",
+      sep = ""
+    )
+    
+    print(explore_bad_cor)
+    
+    stop(
+      "Marginal-correlation ranking cannot be computed as specified. ",
+      "No alternate ranking rule was used."
+    )
+  }
+  
+  explore_cor_rank <- sort(
+    abs(explore_cor),
+    decreasing = TRUE
+  )
+  
+  # A tie exactly at the 20-variable cutoff would make the requested top-20
+  # set ambiguous because no further tie-breaking rule was specified.
+  if (
+    length(explore_cor_rank) > 20 &&
+    explore_cor_rank[20] == explore_cor_rank[21]
+  ) {
+    stop(
+      "Exploratory comparison stopped: marginal correlation has an exact ",
+      "tie at the 20-variable cutoff, and no additional tie rule was specified."
+    )
+  }
+  
+  explore_top20_cor <- names(explore_cor_rank)[1:20]
+  
+  
+  # --------------------------------------------------------------------------
+  # Ranking 2: LASSO entry order
+  # --------------------------------------------------------------------------
+  
+  # Fit a standard LASSO path using training data only.
+  # No cross-validation is used for this ranking.
+  explore_lasso_path <- glmnet::glmnet(
+    x = explore_x_train,
+    y = explore_y_train,
+    alpha = 1
+  )
+  
+  explore_beta <- as.matrix(explore_lasso_path$beta)
+  
+  # Record the first time each predictor receives a non-zero coefficient as
+  # lambda decreases. Within the same lambda step, rank newly entering
+  # predictors by absolute coefficient magnitude at that step.
+  explore_entered <- character(0)
+  
+  for (explore_j in seq_len(ncol(explore_beta))) {
+    
+    explore_nonzero <- rownames(explore_beta)[
+      explore_beta[, explore_j] != 0
+    ]
+    
+    explore_new <- setdiff(
+      explore_nonzero,
+      explore_entered
+    )
+    
+    if (length(explore_new) > 0) {
+      
+      explore_new_abs <- abs(
+        explore_beta[explore_new, explore_j]
+      )
+      
+      explore_new <- explore_new[
+        order(explore_new_abs, decreasing = TRUE)
+      ]
+      
+      # If an unresolved coefficient-magnitude tie would cross the top-20
+      # boundary, stop instead of inventing an additional ranking rule.
+      explore_remaining <- 20 - length(explore_entered)
+      
+      if (
+        explore_remaining > 0 &&
+        length(explore_new) > explore_remaining
+      ) {
+        
+        explore_ordered_abs <- sort(
+          explore_new_abs,
+          decreasing = TRUE
+        )
+        
+        if (
+          explore_ordered_abs[explore_remaining] ==
+          explore_ordered_abs[explore_remaining + 1]
+        ) {
+          stop(
+            "Exploratory comparison stopped: the LASSO entry ranking has ",
+            "an unresolved coefficient-magnitude tie at the top-20 cutoff."
+          )
+        }
+      }
+      
+      explore_entered <- c(
+        explore_entered,
+        explore_new
+      )
+    }
+    
+    if (length(explore_entered) >= 20) {
+      break
+    }
+  }
+  
+  if (length(explore_entered) < 20) {
+    stop(
+      "Exploratory comparison stopped: fewer than 20 predictors entered ",
+      "the LASSO path."
+    )
+  }
+  
+  explore_top20_lasso <- explore_entered[1:20]
+  
+  
+  # --------------------------------------------------------------------------
+  # Ranking 3: standardized coefficient magnitude
+  # --------------------------------------------------------------------------
+  
+  # Standardize every predictor from the full cleaned training design matrix.
+  explore_x_std <- scale(explore_x_train)
+  
+  # Fit OLS using all standardized training predictors.
+  explore_std_design <- cbind(
+    `(Intercept)` = 1,
+    explore_x_std
+  )
+  
+  explore_std_fit <- lm.fit(
+    x = explore_std_design,
+    y = explore_y_train
+  )
+  
+  # A rank-deficient fit would make individual standardized coefficients
+  # non-unique. Stop rather than changing the model or ranking rule.
+  if (explore_std_fit$rank < ncol(explore_std_design)) {
+    stop(
+      "Exploratory comparison stopped: full standardized OLS is rank ",
+      "deficient, so standardized coefficient magnitudes cannot be ranked ",
+      "uniquely as specified."
+    )
+  }
+  
+  explore_std_coef <- explore_std_fit$coefficients[-1]
+  
+  if (any(!is.finite(explore_std_coef))) {
+    stop(
+      "Exploratory comparison stopped: at least one standardized OLS ",
+      "coefficient is not finite."
+    )
+  }
+  
+  explore_std_rank <- sort(
+    abs(explore_std_coef),
+    decreasing = TRUE
+  )
+  
+  # Stop on an unresolved exact tie at the top-20 cutoff.
+  if (
+    length(explore_std_rank) > 20 &&
+    explore_std_rank[20] == explore_std_rank[21]
+  ) {
+    stop(
+      "Exploratory comparison stopped: standardized coefficient magnitude ",
+      "has an exact tie at the 20-variable cutoff."
+    )
+  }
+  
+  explore_top20_std <- names(explore_std_rank)[1:20]
+  
+  
+  # --------------------------------------------------------------------------
+  # Lock the three training-only rankings before examining the test set
+  # --------------------------------------------------------------------------
+  
+  cat("\n============================================================\n")
+  cat("TOP 20 — MARGINAL CORRELATION\n")
+  cat("============================================================\n")
+  cat(
+    paste0(
+      seq_along(explore_top20_cor),
+      ". ",
+      explore_top20_cor
+    ),
+    sep = "\n"
+  )
+  cat("\n")
+  
+  
+  cat("\n============================================================\n")
+  cat("TOP 20 — LASSO ENTRY ORDER\n")
+  cat("============================================================\n")
+  cat(
+    paste0(
+      seq_along(explore_top20_lasso),
+      ". ",
+      explore_top20_lasso
+    ),
+    sep = "\n"
+  )
+  cat("\n")
+  
+  
+  cat("\n============================================================\n")
+  cat("TOP 20 — STANDARDIZED COEFFICIENT MAGNITUDE\n")
+  cat("============================================================\n")
+  cat(
+    paste0(
+      seq_along(explore_top20_std),
+      ". ",
+      explore_top20_std
+    ),
+    sep = "\n"
+  )
+  cat("\n")
+  
+  
+  # --------------------------------------------------------------------------
+  # Pairwise overlap and Overall_Cond membership
+  # --------------------------------------------------------------------------
+  
+  explore_overlap <- data.frame(
+    Comparison = c(
+      "Marginal correlation vs LASSO entry",
+      "Marginal correlation vs standardized coefficient",
+      "LASSO entry vs standardized coefficient"
+    ),
+    Overlap = c(
+      length(intersect(explore_top20_cor, explore_top20_lasso)),
+      length(intersect(explore_top20_cor, explore_top20_std)),
+      length(intersect(explore_top20_lasso, explore_top20_std))
+    )
+  )
+  
+  cat("\n============================================================\n")
+  cat("PAIRWISE TOP-20 OVERLAP\n")
+  cat("============================================================\n")
+  print(
+    explore_overlap,
+    row.names = FALSE
+  )
+  
+  
+  explore_overall_cond <- data.frame(
+    Ranking = c(
+      "Marginal correlation",
+      "LASSO entry order",
+      "Standardized coefficient magnitude"
+    ),
+    Overall_Cond = c(
+      "Overall_Cond" %in% explore_top20_cor,
+      "Overall_Cond" %in% explore_top20_lasso,
+      "Overall_Cond" %in% explore_top20_std
+    )
+  )
+  
+  cat("\n============================================================\n")
+  cat("OVERALL_COND IN TOP 20\n")
+  cat("============================================================\n")
+  print(
+    explore_overall_cond,
+    row.names = FALSE
+  )
+  
+  
+  # --------------------------------------------------------------------------
+  # Test-set evaluation
+  # --------------------------------------------------------------------------
+  
+  # The rankings are now fixed. Build the test design matrix using exactly the
+  # same model-matrix specification as the training data.
+  explore_x_test <- model.matrix(
+    log(SalePrice) ~ . - 1,
+    data = test
+  )
+  
+  # Stop if the training and test matrices are not structurally identical.
+  if (!identical(colnames(explore_x_train), colnames(explore_x_test))) {
+    stop(
+      "Exploratory comparison stopped: training and test design matrices ",
+      "do not contain identical predictor columns."
+    )
+  }
+  
+  explore_y_test_dollars <- test$SalePrice
+  
+  
+  # Fit plain OLS on the original unstandardized predictor columns selected by
+  # each training-only ranking and return dollar-scale test RMSE and MAPE.
+  explore_score_model <- function(explore_vars, explore_name) {
+    
+    explore_train_20 <- explore_x_train[
+      ,
+      explore_vars,
+      drop = FALSE
+    ]
+    
+    explore_test_20 <- explore_x_test[
+      ,
+      explore_vars,
+      drop = FALSE
+    ]
+    
+    # Include an intercept and fit ordinary least squares.
+    explore_design_train <- cbind(
+      `(Intercept)` = 1,
+      explore_train_20
+    )
+    
+    explore_fit <- lm.fit(
+      x = explore_design_train,
+      y = explore_y_train
+    )
+    
+    # Stop if one of the requested 20-predictor OLS models is rank deficient.
+    if (explore_fit$rank < ncol(explore_design_train)) {
+      stop(
+        paste0(
+          "Exploratory comparison stopped: the ",
+          explore_name,
+          " 20-predictor OLS model is rank deficient."
+        )
+      )
+    }
+    
+    explore_design_test <- cbind(
+      `(Intercept)` = 1,
+      explore_test_20
+    )
+    
+    explore_log_pred <- drop(
+      explore_design_test %*% explore_fit$coefficients
+    )
+    
+    # Back-transform predictions to dollars before computing test metrics.
+    explore_pred_dollars <- exp(explore_log_pred)
+    
+    explore_rmse <- sqrt(
+      mean(
+        (explore_y_test_dollars - explore_pred_dollars)^2
+      )
+    )
+    
+    explore_mape <- mean(
+      abs(
+        (explore_y_test_dollars - explore_pred_dollars) /
+          explore_y_test_dollars
+      )
+    ) * 100
+    
+    data.frame(
+      Model = explore_name,
+      Test_RMSE = explore_rmse,
+      Test_MAPE = explore_mape
+    )
+  }
+  
+  
+  # Evaluate exactly the three pre-specified top-20 models.
+  explore_results <- rbind(
+    explore_score_model(
+      explore_top20_cor,
+      "Top 20 marginal correlation"
+    ),
+    explore_score_model(
+      explore_top20_lasso,
+      "Top 20 LASSO entry order"
+    ),
+    explore_score_model(
+      explore_top20_std,
+      "Top 20 standardized coefficient"
+    )
+  )
+  
+  
+  cat("\n============================================================\n")
+  cat("TEST-SET PERFORMANCE — THREE PRE-SPECIFIED TOP-20 MODELS\n")
+  cat("============================================================\n")
+  
+  print(
+    explore_results,
+    digits = 6,
+    row.names = FALSE
+  )
+  
+})
