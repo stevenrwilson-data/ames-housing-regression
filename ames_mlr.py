@@ -55,6 +55,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
+from pathlib import Path
 from sklearn.linear_model import Lasso, LassoCV
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
@@ -961,11 +962,12 @@ fig.text(
     fontfamily="Montserrat",
     color=field
 )
-
+# Create the output folder if it does not already exist.
+Path("images").mkdir(exist_ok=True)
 
 # Save at the same 200-dpi resolution used for the R portfolio plots.
 fig.savefig(
-    "Predicted vs Actual — Test Set (Python).png",
+    "images/predicted_vs_actual_test_python.png",
     dpi=200,
     facecolor=plate
 )
