@@ -45,6 +45,8 @@
 # G. Final model selection
 #    1. Designate the BIC model as the final model
 #
+# H. Final model visualization
+#    1. Predicted vs actual — test set
 # ============================================================
 
 # ============================================================
@@ -59,8 +61,7 @@ from pathlib import Path
 from sklearn.linear_model import Lasso, LassoCV
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
-
-
+from matplotlib import font_manager
 
 # ------------------------------------------------------------
 # 1. Load the already-clean train and test sets
@@ -314,6 +315,12 @@ print(f"Adjusted R²:      {ols_1se.rsquared_adj:.5f}")
 print(f"Residual SE:      {np.sqrt(ols_1se.mse_resid):.5f}")
 print(f"AIC:              {ols_1se.aic:.2f}")
 print(f"BIC:              {ols_1se.bic:.2f}")
+print("\nLASSO 1-SE + OLS predictors")
+
+for predictor in ols_predictors:
+    print(predictor)
+
+print(f"\nTotal predictors: {len(ols_predictors)}")
 
 # ============================================================
 # D. Backward AIC and BIC model selection
@@ -824,8 +831,9 @@ plate = "#F4F0E6"
 
 # Create a square figure matching the dimensions and general
 # appearance of the corresponding R plot.
+# Match the 7 x 7 inch canvas used by the R portfolio plots.
 fig, ax = plt.subplots(
-    figsize=(8, 8),
+    figsize=(7, 7),
     facecolor=plate
 )
 
@@ -871,13 +879,6 @@ ax.set_xticks(axis_ticks)
 ax.set_yticks(axis_ticks)
 
 
-# Equal scaling makes the y = x line appear at 45 degrees.
-ax.set_aspect(
-    "equal",
-    adjustable="box"
-)
-
-
 # Match the minimal R grid styling.
 ax.set_axisbelow(True)
 
@@ -904,13 +905,25 @@ ax.tick_params(
     labelsize=12,
     colors=field
 )
+# Force Montserrat Regular for tick labels.
+plt.setp(
+    ax.get_xticklabels(),
+    fontfamily="Montserrat",
+    fontweight=400
+)
 
+plt.setp(
+    ax.get_yticklabels(),
+    fontfamily="Montserrat",
+    fontweight=400
+)
 
 # Axis labels.
 ax.set_xlabel(
     "Observed log(SalePrice)",
     fontsize=13,
     fontfamily="Montserrat",
+    fontweight=400,
     color=field,
     labelpad=10
 )
@@ -919,6 +932,7 @@ ax.set_ylabel(
     "Predicted log(SalePrice)",
     fontsize=13,
     fontfamily="Montserrat",
+    fontweight=400,
     color=field,
     labelpad=10
 )
@@ -942,7 +956,7 @@ fig.text(
     va="top",
     fontsize=18,
     fontfamily="Archivo Black",
-    fontweight="bold",
+    fontweight=400,
     color=plum
 )
 
@@ -960,6 +974,7 @@ fig.text(
     va="top",
     fontsize=13,
     fontfamily="Montserrat",
+    fontweight=400,
     color=field
 )
 # Create the output folder if it does not already exist.
